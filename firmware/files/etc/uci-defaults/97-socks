@@ -1,0 +1,30 @@
+#!/bin/sh
+[ -n "$(uci -q get microsocks.config.password)" ] && exit 0
+
+lan_ip=$(uci -q get network.lan.ipaddr | cut -d/ -f1)
+
+uci -q batch <<EOF
+set microsocks.config.enabled='1'
+set microsocks.config.listenip='${lan_ip:-192.168.1.1}'
+set microsocks.config.port='1080'
+set microsocks.config.user='lte'
+set microsocks.config.password='$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)'
+set microsocks.config.auth_once='0'
+set microsocks.config.quiet='1'
+commit microsocks
+set firewall.socks_allow=ipset
+set firewall.socks_allow.name='socks_allow'
+set firewall.socks_allow.family='ipv4'
+set firewall.socks_allow.match='src_ip'
+add_list firewall.socks_allow.entry='192.168.1.2'
+set firewall.socks_lan=rule
+set firewall.socks_lan.name='SOCKS-allowed-hosts-only'
+set firewall.socks_lan.src='lan'
+set firewall.socks_lan.proto='tcp'
+set firewall.socks_lan.dest_port='1080'
+set firewall.socks_lan.ipset='!socks_allow'
+set firewall.socks_lan.target='REJECT'
+commit firewall
+EOF
+chmod 600 /etc/config/microsocks
+exit 0

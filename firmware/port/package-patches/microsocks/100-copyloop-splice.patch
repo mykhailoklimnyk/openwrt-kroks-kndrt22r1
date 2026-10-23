@@ -1,0 +1,82 @@
+From: Mykhailo Klimnyk <109966003+mykhailoklimnyk@users.noreply.github.com>
+Subject: [PATCH] copyloop: relay data with splice()
+
+Moving the data through a pipe with splice() keeps it inside the kernel
+instead of copying it to user space and back for every chunk. On slow
+router CPUs (MIPS 24KEc, 580 MHz) these copies are what limits the
+proxy throughput. Falls back to read()/write() when splice() is not
+supported for the descriptors.
+
+--- a/sockssrv.c
++++ b/sockssrv.c
+@@ -30,6 +30,7 @@
+ #include <pthread.h>
+ #include <signal.h>
+ #include <poll.h>
++#include <fcntl.h>
+ #include <arpa/inet.h>
+ #include <errno.h>
+ #include <limits.h>
+@@ -268,6 +269,12 @@
+ 		[0] = {.fd = fd1, .events = POLLIN},
+ 		[1] = {.fd = fd2, .events = POLLIN},
+ 	};
++	/* splice() moves the data through a pipe inside the kernel instead of
++	   copying it to user space and back; on a slow router CPU these copies
++	   are what limits the throughput. falls back to read/write if the
++	   kernel cannot splice these descriptors. */
++	int pipefd[2];
++	int use_splice = pipe(pipefd) == 0, have_pipe = use_splice;
+ 
+ 	while(1) {
+ 		/* inactive connections are reaped after 15 min to free resources.
+@@ -275,25 +282,45 @@
+ 		   when a connection is really unused. */
+ 		switch(poll(fds, 2, 60*15*1000)) {
+ 			case 0:
+-				return;
++				goto out;
+ 			case -1:
+ 				if(errno == EINTR || errno == EAGAIN) continue;
+ 				else perror("poll");
+-				return;
++				goto out;
+ 		}
+ 		int infd = (fds[0].revents & POLLIN) ? fd1 : fd2;
+ 		int outfd = infd == fd2 ? fd1 : fd2;
++		if(use_splice) {
++			ssize_t n = splice(infd, NULL, pipefd[1], NULL, 65536, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
++			if(n == 0) goto out;
++			if(n > 0) {
++				while(n > 0) {
++					ssize_t m = splice(pipefd[0], NULL, outfd, NULL, n, SPLICE_F_MOVE);
++					if(m <= 0) goto out;
++					n -= m;
++				}
++				continue;
++			}
++			if(errno == EINTR || errno == EAGAIN) continue;
++			if(errno != EINVAL && errno != ENOSYS) goto out;
++			use_splice = 0;
++		}
+ 		/* since the biggest stack consumer in the entire code is
+ 		   libc's getaddrinfo(), we can safely use at least half the
+ 		   available stacksize to improve throughput. */
+ 		char buf[MIN(16*1024, THREAD_STACK_SIZE/2)];
+ 		ssize_t sent = 0, n = read(infd, buf, sizeof buf);
+-		if(n <= 0) return;
++		if(n <= 0) goto out;
+ 		while(sent < n) {
+ 			ssize_t m = write(outfd, buf+sent, n-sent);
+-			if(m < 0) return;
++			if(m < 0) goto out;
+ 			sent += m;
+ 		}
++	}
++out:
++	if(have_pipe) {
++		close(pipefd[0]);
++		close(pipefd[1]);
+ 	}
+ }
+ 

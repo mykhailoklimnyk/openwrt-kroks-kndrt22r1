@@ -1,0 +1,4 @@
+	kroks,kndrt22r1)
+		ucidef_add_switch "switch0" \
+			"1:lan" "6@eth0"
+		;;

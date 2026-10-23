@@ -1,0 +1,3 @@
+kroks,kndrt22r1)
+	ucidef_set_led_switch "lan" "lan" "white:lan" "switch0" "0x02"
+	;;

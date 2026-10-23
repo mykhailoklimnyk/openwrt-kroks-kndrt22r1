@@ -1,0 +1,25 @@
+CONFIG_TARGET_ramips=y
+CONFIG_TARGET_ramips_mt7620=y
+CONFIG_TARGET_ramips_mt7620_DEVICE_kroks_kndrt22r1=y
+# CONFIG_PACKAGE_kmod-rt2800-soc is not set
+# CONFIG_PACKAGE_wpad-basic-mbedtls is not set
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-ssl=y
+CONFIG_PACKAGE_kmod-usb-net-qmi-wwan=y
+CONFIG_PACKAGE_kmod-usb-net-cdc-ether=y
+CONFIG_PACKAGE_kmod-usb-net-cdc-mbim=y
+CONFIG_PACKAGE_kmod-usb-serial-option=y
+CONFIG_PACKAGE_modemmanager=y
+CONFIG_MODEMMANAGER_WITH_QMI=y
+CONFIG_MODEMMANAGER_WITH_MBIM=y
+CONFIG_MODEMMANAGER_WITH_AT_COMMAND_VIA_DBUS=y
+CONFIG_PACKAGE_luci-proto-modemmanager=y
+CONFIG_PACKAGE_qmi-utils=y
+CONFIG_PACKAGE_sms-tool=y
+CONFIG_PACKAGE_microsocks=y
+CONFIG_PACKAGE_speedtestcpp=y
+CONFIG_PACKAGE_prometheus-node-exporter-lua=y
+CONFIG_PACKAGE_prometheus-node-exporter-lua-openwrt=y
+CONFIG_PACKAGE_prometheus-node-exporter-lua-textfile=y
+CONFIG_PACKAGE_prometheus-node-exporter-lua-netstat=y
+CONFIG_PACKAGE_prometheus-node-exporter-lua-modemmanager=y

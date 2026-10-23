@@ -1,0 +1,16 @@
+#!/bin/sh
+token=$(echo "&$QUERY_STRING" | sed -n 's/.*&token=\([^&]*\).*/\1/p')
+want=$(cat /etc/lte-rotate.token 2>/dev/null)
+
+if [ -z "$want" ] || [ "$token" != "$want" ]; then
+	printf 'Status: 403 Forbidden\r\nContent-Type: application/json\r\n\r\n{"ok":false,"error":"bad token"}\n'
+	exit 0
+fi
+
+out=$(/usr/sbin/lte-rotate --json); rc=$?
+case $rc in
+	0|1) status="200 OK" ;;
+	3) status="409 Conflict" ;;
+	*) status="502 Bad Gateway" ;;
+esac
+printf 'Status: %s\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n\r\n%s\n' "$status" "$out"

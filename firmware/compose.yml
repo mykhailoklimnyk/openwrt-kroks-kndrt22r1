@@ -1,0 +1,19 @@
+services:
+  build:
+    image: kndrt22r1-builder
+    container_name: openwrt-kndrt22r1-build
+    restart: "no"
+    user: "${UID_GID:-1000:1000}"
+    cpus: ${CPUS:-6}
+    cpu_shares: 256
+    mem_limit: ${MEM:-5g}
+    memswap_limit: ${MEMSWAP:-6g}
+    environment:
+      VERSION: ""
+      JOBS: ${JOBS:-8}
+      HOME: /work
+    volumes:
+      - ${REPO:-/projects/ep06-board-poe-proxy}/firmware:/opt/firmware:ro
+      - ${REPO:-/projects/ep06-board-poe-proxy}/firmware/build:/work
+      - ${REPO:-/projects/ep06-board-poe-proxy}/firmware/images:/images
+    command: ["bash", "/opt/firmware/build.sh"]

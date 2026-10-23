@@ -1,0 +1,78 @@
+#!/bin/sh
+. /lib/functions.sh
+. /lib/netifd/netifd-proto.sh
+
+IFACE=lte
+FLAG=/var/run/lte-rotate
+LOCK=/var/lock/lte-rotate.d
+JSON=0; [ "$1" = "--json" ] && JSON=1
+
+cs() { cut -d' ' -f1 /proc/uptime | tr -d .; }
+at() { mmcli -m 0 --command="$1" 2>&1; }
+bearer() { mmcli -m 0 --output-keyvalue | sed -n 's/^modem.generic.bearers.value\[1\] *: *//p'; }
+bfield() { echo "$1" | sed -n "s/^bearer.ipv4-config.$2 *: *//p"; }
+extip() { uclient-fetch -4 -q -T 4 -O - http://speed.cloudflare.com/cdn-cgi/trace 2>/dev/null | sed -n 's/^ip=//p'; }
+online() { ping -c1 -W1 1.1.1.1 >/dev/null 2>&1; }
+
+wait_until() {
+	local n=0
+	until eval "$1"; do n=$((n + 1)); [ "$n" -ge "$2" ] && return 1; done
+}
+
+apply_bearer() {
+	local kv addr prefix gw mtu dns
+	kv=$(mmcli -b "$1" --output-keyvalue)
+	addr=$(bfield "$kv" address); prefix=$(bfield "$kv" prefix); gw=$(bfield "$kv" gateway); mtu=$(bfield "$kv" mtu)
+	[ -n "$addr" ] && [ "$addr" != "--" ] || return 1
+	proto_init_update wwan0 1
+	proto_add_ipv4_address "$addr" "$prefix"
+	[ -n "$gw" ] && [ "$gw" != "--" ] && proto_add_ipv4_route 0.0.0.0 0 "$gw" "$addr"
+	for dns in $(echo "$kv" | sed -n 's/^bearer.ipv4-config.dns.value\[[0-9]*\] *: *//p'); do
+		proto_add_dns_server "$dns"
+	done
+	proto_send_update "$IFACE"
+	[ -n "$mtu" ] && [ "$mtu" != "--" ] && ip link set wwan0 mtu "$mtu"
+	return 0
+}
+
+reattach() {
+	local b
+	at "$1" >/dev/null; at "$2" >/dev/null
+	b=$(bearer); [ -n "$b" ] || return 1
+	mmcli -b "$b" --connect >/dev/null 2>&1 || { sleep 1; mmcli -b "$b" --connect >/dev/null 2>&1; } || return 1
+	apply_bearer "$b" || return 1
+	wait_until online 10
+}
+
+result() {
+	local s="$(( $5 / 100 )).$(( $5 % 100 / 10 ))"
+	logger -t lte-rotate "method=$2 old=$3 new=$4 seconds=$s"
+	if [ "$JSON" = 1 ]; then
+		printf '{"ok":%s,"changed":%s,"method":"%s","old_ip":"%s","new_ip":"%s","seconds":%s}\n' \
+			"$([ "$1" -le 1 ] && echo true || echo false)" "$([ "$1" = 0 ] && echo true || echo false)" \
+			"$2" "$3" "$4" "$s"
+	else
+		echo "$2: $3 -> $4 in ${s}s"
+	fi
+	exit "$1"
+}
+
+mkdir "$LOCK" 2>/dev/null || { [ "$JSON" = 1 ] && echo '{"ok":false,"error":"busy"}' || echo busy; exit 3; }
+trap 'rm -f "$FLAG"; rmdir "$LOCK"; [ "$socks" = 1 ] && (/etc/init.d/microsocks start >/dev/null 2>&1 </dev/null &)' EXIT
+
+t0=$(cs)
+old=$(cat /var/run/lte-ip 2>/dev/null); [ -n "$old" ] || old=$(extip)
+socks=0
+pid=$(ubus call service list '{"name":"microsocks"}' 2>/dev/null | jsonfilter -e '@.microsocks.instances.*.pid')
+[ -n "$pid" ] && { socks=1; kill -KILL $pid; /etc/init.d/microsocks stop; }
+touch "$FLAG"
+method=cgatt
+reattach 'AT+CGATT=0' 'AT+CGATT=1' || { method=cfun4; reattach 'AT+CFUN=4' 'AT+CFUN=1'; } || {
+	method=ifup; rm -f "$FLAG"; ifup "$IFACE"; wait_until 'online || { sleep 1; false; }' 30
+}
+rm -f "$FLAG"
+new=$(extip); t1=$(cs)
+[ -n "$new" ] && echo "$new" > /var/run/lte-ip
+[ -z "$new" ] && result 2 "$method" "$old" "" $((t1 - t0))
+[ "$new" = "$old" ] && result 1 "$method" "$old" "$new" $((t1 - t0))
+result 0 "$method" "$old" "$new" $((t1 - t0))

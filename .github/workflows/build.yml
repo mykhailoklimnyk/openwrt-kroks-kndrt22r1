@@ -1,0 +1,129 @@
+name: build
+
+on:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "OpenWrt release, e.g. 25.12.6 (empty = current stable)"
+        required: false
+      release:
+        description: "Publish the images as a GitHub release"
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths:
+      - "firmware/**"
+      - ".github/workflows/build.yml"
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      build: ${{ steps.v.outputs.build }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_RELEASE: ${{ inputs.release }}
+        run: |
+          v="$INPUT_VERSION"
+          [ -n "$v" ] || v=$(curl -fsS https://downloads.openwrt.org/.versions.json | jq -r .stable_version)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          exists=false
+          gh release view "openwrt-$v" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exists=true
+          case "$GITHUB_EVENT_NAME" in
+            schedule) build=$([ "$exists" = false ] && echo true || echo false); release=$build ;;
+            workflow_dispatch) build=true; release="$INPUT_RELEASE" ;;
+            *) build=true; release=false ;;
+          esac
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "OpenWrt $v: release exists=$exists, build=$build, publish=$release" >> "$GITHUB_STEP_SUMMARY"
+      - if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/enable"
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune -af >/dev/null
+          base=/
+          [ -d /mnt ] && [ "$(df -Pk /mnt | awk 'NR==2{print $4}')" -gt "$(df -Pk / | awk 'NR==2{print $4}')" ] && base=/mnt
+          sudo mkdir -p "$base/work" && sudo chown "$(id -u):$(id -g)" "$base/work"
+          echo "WORK=$base/work" >> "$GITHUB_ENV"
+          df -h / /mnt 2>/dev/null
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.WORK }}/dl
+          key: dl-${{ env.VERSION }}-${{ hashFiles('firmware/config/diffconfig') }}
+          restore-keys: dl-${{ env.VERSION }}-
+
+      - name: Builder image
+        run: docker build -t kndrt22r1-builder firmware
+
+      - name: Build OpenWrt ${{ env.VERSION }}
+        run: |
+          mkdir -p out
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -e HOME=/work -e VERSION="$VERSION" -e JOBS="$(($(nproc) + 1))" -e PORT_COMMIT="$GITHUB_SHA" \
+            -v "$PWD/firmware:/opt/firmware:ro" -v "$WORK:/work" -v "$PWD/out:/images" \
+            kndrt22r1-builder bash /opt/firmware/build.sh
+
+      - name: Check image
+        run: python3 -I scripts/preflash-check.py --no-backup out/"$VERSION"/*-squashfs-sysupgrade.bin
+
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ env.VERSION }}
+          path: ${{ env.WORK }}/build-*.log
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-${{ env.VERSION }}-kroks_kndrt22r1
+          path: out/${{ env.VERSION }}/
+
+      - if: needs.check.outputs.release == 'true'
+        name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="openwrt-$VERSION"
+          cd "out/$VERSION"
+          notes="OpenWrt $VERSION for Kroks KNdRt22R1, built by CI from $GITHUB_SHA (OpenWrt commit $(cat openwrt-commit)).
+
+          Not tested on hardware yet: this stays a pre-release until it has been flashed and checked on a real board.
+          Verify the checksum (SHA256SUMS), read the README, and keep a full flash backup before flashing."
+          files="*-squashfs-sysupgrade.bin *-initramfs-kernel.bin *.manifest SHA256SUMS"
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" $files --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" $files -R "$GITHUB_REPOSITORY" --prerelease --title "OpenWrt $VERSION for Kroks KNdRt22R1" --notes "$notes"
+          fi

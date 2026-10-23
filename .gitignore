@@ -1,0 +1,7 @@
+# secrets: LuCI password, flash dumps (MACs, Wi-Fi calibration, password hashes, keys)
+.env
+backup/
+# build tree (~15 GB) and built images
+firmware/build/
+firmware/images/
+__pycache__/

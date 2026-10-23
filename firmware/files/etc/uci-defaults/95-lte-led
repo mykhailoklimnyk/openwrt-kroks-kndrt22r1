@@ -1,0 +1,11 @@
+#!/bin/sh
+uci -q batch <<EOF
+set system.led_lte=led
+set system.led_lte.name='LTE'
+set system.led_lte.sysfs='yellow:wlan'
+set system.led_lte.trigger='netdev'
+set system.led_lte.dev='wwan0'
+set system.led_lte.mode='link tx rx'
+commit system
+EOF
+exit 0
